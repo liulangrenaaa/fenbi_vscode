@@ -128,9 +128,16 @@ var Webview = class {
     this.setWebviewHtml(extensionPath);
     return this.panel;
   }
+  // 仅向仍然打开的题库页面发送消息，避免关闭或重建标签页后误投。
   postMessage({ command, data }) {
+    const panel = this.panel;
+    if (!panel)
+      return;
+    // 跳过已经关闭或被替换的页面。
     setTimeout(() => {
-      this.getPanel().webview.postMessage({
+      if (this.panel !== panel)
+        return;
+      panel.webview.postMessage({
         command,
         data
       });
@@ -2519,19 +2526,26 @@ var WebviewHandle = class {
 };
 
 // src/extension.ts
-// 注册鲁班练习专属命令和视图，使其可以与原插件并存。
+// 注册编辑器题库及左侧入口，使点击图标时直接打开题库标签页。
 function activate(context) {
   const provider = new MyWebviewProvider(context);
   context.subscriptions.push(
+    // 从命令面板打开或切回已有题库标签页。
+    vscode7.commands.registerCommand("lubanPractice.openWebview", () => {
+      provider.openEditor();
+    }),
+    // 将鲁班练习的最新设置发送到题库页面。
     vscode7.commands.registerCommand("lubanPractice.refreshEntry", () => {
-      // 将鲁班练习的最新设置发送到题库页面。
+      provider.openEditor();
       const config = vscode7.workspace.getConfiguration("lubanPractice");
       webview.postMessage({
         command: "setting",
         data: config
       });
     }),
+    // 在编辑器题库中切换智能伪装。
     vscode7.commands.registerCommand("lubanPractice.toggleDisguise", () => {
+      provider.openEditor();
       webview.postMessage({
         command: "showDisguise",
         data: null
@@ -2541,18 +2555,74 @@ function activate(context) {
       webviewOptions: {
         retainContextWhenHidden: true
       }
+    }),
+    vscode7.window.registerWebviewPanelSerializer("lubanPractice.editor", {
+      // 在窗口重载后重新绑定已恢复的题库标签页。
+      async deserializeWebviewPanel(panel) {
+        provider.restoreEditor(panel);
+      }
     })
   );
 }
 var MyWebviewProvider = class {
+  // 保存扩展上下文，供编辑器题库加载资源和管理监听器。
   constructor(context) {
     this._context = context;
   }
-  async resolveWebviewView(webviewView) {
-    webview.createSideInit(webviewView, this._context.extensionPath);
-    this._messageDisposable?.dispose();
-    this._messageDisposable = new WebviewHandle().onDidReceiveMessage();
-    this._context.subscriptions.push(this._messageDisposable);
+  // 复用唯一的题库标签页，并固定在第一个编辑器分组打开。
+  openEditor() {
+    if (this._editorPanel) {
+      this._editorPanel.reveal(vscode7.ViewColumn.One);
+      return;
+    }
+    const panel = vscode7.window.createWebviewPanel(
+      "lubanPractice.editor",
+      "鲁班练习",
+      { viewColumn: vscode7.ViewColumn.One, preserveFocus: false },
+      { enableScripts: true, retainContextWhenHidden: true }
+    );
+    this.restoreEditor(panel);
+  }
+  // 将新建或恢复的标签页连接到同一套题库消息处理器。
+  restoreEditor(panel) {
+    if (this._editorPanel) {
+      panel.dispose();
+      this.openEditor();
+      return;
+    }
+    this._editorPanel = panel;
+    panel.title = "鲁班练习";
+    panel.iconPath = vscode7.Uri.file(path.join(this._context.extensionPath, "resources/dark/fish.png"));
+    panel.webview.options = { ...panel.webview.options, enableScripts: true };
+    webview.panel = panel;
+    const messageDisposable = new WebviewHandle().onDidReceiveMessage();
+    // 标签页关闭后释放消息监听器，允许下一次正常重新打开。
+    const disposeListener = panel.onDidDispose(() => {
+      messageDisposable.dispose();
+      if (this._editorPanel === panel)
+        this._editorPanel = void 0;
+      if (webview.panel === panel)
+        webview.panel = void 0;
+    });
+    this._context.subscriptions.push(panel, messageDisposable, disposeListener);
+    webview.setWebviewHtml(this._context.extensionPath);
+  }
+  // 点击左侧入口时打开编辑器题库，并自动收起入口侧栏。
+  openFromSidebar() {
+    this.openEditor();
+    void vscode7.commands.executeCommand("workbench.action.closeSidebar");
+  }
+  // 左侧视图只承担入口职责，题库页面始终运行在编辑器标签页。
+  resolveWebviewView(webviewView) {
+    webviewView.webview.html = "<!DOCTYPE html><html><body></body></html>";
+    // 再次点击左侧图标时切回已有题库，不重复创建页面。
+    const visibilityListener = webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible)
+        this.openFromSidebar();
+    });
+    this._context.subscriptions.push(visibilityListener);
+    if (webviewView.visible)
+      this.openFromSidebar();
   }
 };
 // Annotate the CommonJS export names for ESM import in node:

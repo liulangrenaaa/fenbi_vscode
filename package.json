@@ -3,7 +3,7 @@
   "displayName": "鲁班练习",
   "description": "鲁班练习：基于粉笔题库的行测、申论学习工具（本地改造版）",
   "icon": "resources/dark/fish.png",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "license": "ISC",
   "engines": {
     "vscode": "^1.96.0"
@@ -20,7 +20,9 @@
     "做题"
   ],
   "main": "./out/extension.js",
-  "activationEvents": [],
+  "activationEvents": [
+    "onWebviewPanel:lubanPractice.editor"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -63,16 +65,16 @@
       }
     ],
     "menus": {
-      "view/title": [
+      "editor/title": [
         {
           "command": "lubanPractice.refreshEntry",
           "group": "navigation",
-          "when": "view == lubanPractice.mainView"
+          "when": "activeWebviewPanelId == lubanPractice.editor"
         },
         {
           "command": "lubanPractice.toggleDisguise",
           "group": "navigation",
-          "when": "view == lubanPractice.mainView"
+          "when": "activeWebviewPanelId == lubanPractice.editor"
         }
       ]
     },
@@ -142,7 +144,8 @@
     "import-installed": "node scripts/import-installed.mjs",
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs",
-    "package": "npm run build && vsce package --no-dependencies --out dist/luban-practice-1.2.4-local.vsix"
+    "test": "npm run build && node scripts/editor-smoke.mjs",
+    "package": "npm run build && vsce package --no-dependencies --out dist/luban-practice-1.2.5-local.vsix"
   },
   "devDependencies": {
     "@babel/generator": "7.28.5",
