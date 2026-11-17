@@ -3,7 +3,7 @@
   "displayName": "鲁班练习",
   "description": "鲁班练习：基于粉笔题库的行测、申论学习工具（本地改造版）",
   "icon": "resources/dark/fish.png",
-  "version": "1.2.5",
+  "version": "1.2.8",
   "license": "ISC",
   "engines": {
     "vscode": "^1.96.0"
@@ -81,6 +81,11 @@
     "configuration": {
       "title": "鲁班练习",
       "properties": {
+        "lubanPractice.opencodePath": {
+          "type": "string",
+          "default": "opencode",
+          "description": "WSL 中 OpenCode 可执行文件路径。默认自动查找 PATH、~/.opencode/bin、~/.local/bin 和 nvm 安装目录。"
+        },
         "lubanPractice.cookie": {
           "type": "string",
           "default": "",
@@ -144,13 +149,22 @@
     "import-installed": "node scripts/import-installed.mjs",
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs",
-    "test": "npm run build && node scripts/editor-smoke.mjs",
-    "package": "npm run build && vsce package --no-dependencies --out dist/luban-practice-1.2.5-local.vsix"
+    "test": "npm run build && node scripts/editor-smoke.mjs && node --test scripts/agent.test.mjs",
+    "test:ui": "node scripts/agent-ui-smoke.mjs",
+    "package": "npm run build && vsce package --no-dependencies --out dist/luban-practice-1.2.8-local.vsix"
   },
   "devDependencies": {
+    "@agentclientprotocol/sdk": "2.7.0",
     "@babel/generator": "7.28.5",
     "@babel/parser": "7.28.5",
+    "@playwright/test": "1.65.1",
     "@vscode/vsce": "4.1.1",
+    "dompurify": "3.4.18",
+    "esbuild": "0.28.2",
+    "html-to-text": "10.0.1",
+    "katex": "0.19.1",
+    "lucide": "1.74.0",
+    "marked": "18.2.1",
     "prettier": "3.10.1"
   },
   "repository": {

@@ -19,7 +19,8 @@
     m = n(3793),
     h = n(3640),
     p = n(2419),
-    v = n(5114);
+    v = n(5114),
+    agent = n(9901);
   (n(1998), n(8191));
   var g = function () {
     var e = (0, p.useDisguise)().startDisguise;
@@ -35,6 +36,7 @@
       null
     );
   };
+  // 在原题库页面外提供左侧助手及题目上下文，不改变原有路由。
   t.App = function () {
     return r.createElement(
       h.SettingProvider,
@@ -44,7 +46,7 @@
         null,
         r.createElement(g, null),
         r.createElement(
-          "div",
+          agent.AgentWorkspace,
           {
             className: "app",
           },

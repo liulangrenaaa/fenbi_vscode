@@ -158,7 +158,8 @@
     "8934",
     "3014",
     "2600",
-    "9949"
+    "9949",
+    "9901"
   ],
   "editable": {
     "2": "src/views/modules/2-CustomTree.js",
@@ -200,6 +201,7 @@
     "8595": "src/views/modules/8595-getVscodeApi.js",
     "8934": "src/views/modules/8934-body.js",
     "9053": "src/views/modules/9053-Detail.js",
-    "9226": "src/views/modules/9226-setImg.js"
+    "9226": "src/views/modules/9226-setImg.js",
+    "9901": "src/views/modules/9901-agent.js"
   }
 }

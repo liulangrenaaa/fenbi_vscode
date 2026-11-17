@@ -86,13 +86,15 @@
     u = n(2961),
     d = n(9226),
     f = n(3640),
-    m = n(5077);
+    m = n(5077),
+    agent = n(9901);
   var h = function (e) {
       return u.radioMap[e + 1] || String(e + 1);
     },
     p = function (e, t) {
       return (0, m.parseChoiceIndexes)(e, t).map(h).join("、");
     };
+  // 渲染题目并将当前题干、材料和选项同步到内置助手。
   t.QuestionItem = function (e) {
     var t,
       n,
@@ -167,6 +169,7 @@
     return c.createElement(
       "div",
       null,
+      // 每道题独立注册上下文，点击任意题目区域即可切换助手会话。
       o.map(function (e, t) {
         var n,
           r,
@@ -180,9 +183,14 @@
           k = p(w, f),
           $ = b === w;
         return c.createElement(
-          "div",
+          agent.QuestionShell,
           {
             key: e.globalId || e.id || t,
+            question: e,
+            materials: v,
+            materialIndex: t,
+            category: A.categoryId,
+            number: x + t + 1,
           },
           (v || []).length > 0 &&
             c.createElement("div", {

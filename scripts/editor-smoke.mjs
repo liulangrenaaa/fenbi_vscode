@@ -77,7 +77,7 @@ function createHost() {
   const sandbox = { module: { exports: {} }, require: requireModule, console, URL, Buffer, process, setTimeout, clearTimeout, setInterval, clearInterval };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(filename, "utf8"), sandbox, { filename });
-  sandbox.module.exports.activate({ extensionPath: root, subscriptions: [] });
+  sandbox.module.exports.activate({ extensionPath: root, subscriptions: [], globalState: { get: (_, fallback) => fallback } });
   return {
     commands, panels, configuration,
     // 暴露宿主事件状态用于断言。
@@ -92,6 +92,7 @@ function createHost() {
 // 构造具有事件释放和消息记录能力的题库标签页。
 function createPanel() {
   let disposeListener;
+  const listeners = new Set();
   const panel = {
     messages: [], reveals: [], disposed: false, listenerCount: 0,
     webview: {
@@ -110,11 +111,14 @@ function createPanel() {
       // 跟踪每个标签页的消息监听器数量。
       onDidReceiveMessage(callback) {
         panel.listenerCount += 1;
-        panel.receive = callback;
+        listeners.add(callback);
+        // 真实宿主会将每条消息分发给全部监听器。
+        panel.receive = (message) => { for (const listener of listeners) listener(message); };
         let active = true;
         // 模拟监听器释放的幂等行为。
         return disposable(() => {
           if (active) panel.listenerCount -= 1;
+          listeners.delete(callback);
           active = false;
         });
       },
@@ -155,7 +159,7 @@ const first = host.panels[0];
 assert.equal(host.panels.length, 1);
 assert.equal(first.position.viewColumn, 1);
 assert.equal(first.options.retainContextWhenHidden, true);
-assert.equal(first.listenerCount, 1);
+assert.equal(first.listenerCount, 2);
 assert.match(first.webview.html, /out\/views\/main.js/);
 assert.equal(host.closedSidebar, 1);
 assert.equal(sidebar.visible, false);
@@ -191,7 +195,7 @@ assert.equal(restoredHost.panels.length, 0, "活动栏不能重复创建已恢�
 const duplicate = createPanel();
 await restoredHost.restore(duplicate);
 assert.equal(duplicate.disposed, true);
-assert.equal(restored.listenerCount, 1);
+assert.equal(restored.listenerCount, 2);
 restored.dispose();
 assert.equal(restored.listenerCount, 0);
 restoredHost.commands.get("lubanPractice.openWebview")();

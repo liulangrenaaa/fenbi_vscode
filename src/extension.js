@@ -33,6 +33,7 @@ __export(extension_exports, {
 });
 module.exports = __toCommonJS(extension_exports);
 var vscode7 = __toESM(require("vscode"));
+var { AgentController, plainHtml, enrichQuestionMaterials } = require("./agent/controller.js");
 
 // src/utils/webview.ts
 var vscode2 = __toESM(require("vscode"));
@@ -64,18 +65,20 @@ var interval = () => {
 };
 var runInterval = interval();
 // 为鲁班练习创建题库页面的 HTML 容器。
-var templateHtml = (scriptUri) => {
+var templateHtml = (scriptUri, agentScriptUri, agentStyleUri) => {
   return `<!DOCTYPE html>
-  <html lang="en">
+  <html lang="zh-CN">
     <head>
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <title>鲁班练习</title>
+      <link rel="stylesheet" href="${agentStyleUri}" />
     </head>
     <body>
       <div id="loading">\u9875\u9762\u521D\u59CB\u5316\u4E2D...</div>
       <div id="root"></div>
-      <script src=${scriptUri}></script>
+      <script src="${agentScriptUri}"></script>
+      <script src="${scriptUri}"></script>
     </body>
   </html>`;
 };
@@ -88,13 +91,16 @@ var Webview = class {
     }
     return this.panel;
   }
+  // 加载题库和内置助手资源，所有模型请求均由扩展宿主处理。
   setWebviewHtml(extensionPath) {
     const scriptPath = vscode2.Uri.file(
       path.join(extensionPath, mainConfig.jsPath)
     );
     const panel = this.getPanel();
     const scriptUri = panel.webview.asWebviewUri(scriptPath);
-    panel.webview.html = templateHtml(scriptUri);
+    const agentScriptUri = panel.webview.asWebviewUri(vscode2.Uri.file(path.join(extensionPath, "out/views/agent-ui.js")));
+    const agentStyleUri = panel.webview.asWebviewUri(vscode2.Uri.file(path.join(extensionPath, "out/views/agent-ui.css")));
+    panel.webview.html = templateHtml(scriptUri, agentScriptUri, agentStyleUri);
   }
   createSideInit(webviewView, extensionPath) {
     this.panel = webviewView;
@@ -128,11 +134,25 @@ var Webview = class {
     this.setWebviewHtml(extensionPath);
     return this.panel;
   }
-  // 仅向仍然打开的题库页面发送消息，避免关闭或重建标签页后误投。
+  // 缓存已查看的题库解析，并仅向仍然打开的题库页面发送消息。
   postMessage({ command, data }) {
     const panel = this.panel;
     if (!panel)
       return;
+    if (Array.isArray(data?.solutions)) {
+      this.referenceCache ||= new Map();
+      for (const solution of data.solutions) {
+        const id = solution.globalId || solution.id;
+        if (id && solution.solution) {
+          this.referenceCache.set(String(id), {
+            answer: parseChoiceIndexes(solution.correctAnswer?.choice, solution.type === 2).map((index) => String.fromCharCode(65 + index)).join("、"),
+            solution: plainHtml(solution.solution)
+          });
+        }
+      }
+      while (this.referenceCache.size > 300)
+        this.referenceCache.delete(this.referenceCache.keys().next().value);
+    }
     // 跳过已经关闭或被替换的页面。
     setTimeout(() => {
       if (this.panel !== panel)
@@ -533,11 +553,12 @@ var getExercisesUrl = async ({
   const res = await request_default("GET", url);
   return res;
 };
+// 加载题目并补齐每题材料上下文，页面仍沿用原有的材料去重显示。
 var getQuestion = async (category, url, _type = 1) => {
   const _url = `${url}&routecs=${category}&type=1&kav=121&av=121&hav=121&app=web`;
   const res = await request_default("GET", _url);
   return {
-    ...res,
+    ...enrichQuestionMaterials(res),
     materials: buildMaterialsForQuestions(res.card, res.materials)
   };
 };
@@ -610,11 +631,12 @@ var getSolution = async (category = "xingce", combineKey) => {
   const res = await request_default("GET", url);
   return res;
 };
+// 加载已可查看的解析，并保留每题实际关联的材料供助手使用。
 var getSolutionQuestion = async (url, category = "xingce") => {
   const _url = `${url}&routecs=${category}&type=1&kav=121&av=121&hav=121&app=web`;
   const res = await request_default("GET", _url);
   return {
-    ...res,
+    ...enrichQuestionMaterials(res),
     materials: buildMaterialsForQuestions(res.card, res.materials || [])
   };
 };
@@ -2596,15 +2618,39 @@ var MyWebviewProvider = class {
     panel.webview.options = { ...panel.webview.options, enableScripts: true };
     webview.panel = panel;
     const messageDisposable = new WebviewHandle().onDidReceiveMessage();
+    // 为该标签页创建独立助手，避免关闭后继续向新页面发送生成结果。
+    const agent = new AgentController(this._context, vscode7, (message) => {
+      void panel.webview.postMessage(message);
+    }, async (question) => {
+      const cached = webview.referenceCache?.get(question.id);
+      if (cached)
+        return cached;
+      const category = getCategoryRouteConfig(question.category).apiCategory;
+      const response = await getErrorSolutions(category, [question.id]);
+      const solution = flattenResponseItems(response).find((item) => String(item.globalId || item.id) === question.id);
+      if (!solution?.solution)
+        return null;
+      return {
+        answer: parseChoiceIndexes(solution.correctAnswer?.choice, solution.type === 2).map((index) => String.fromCharCode(65 + index)).join("、"),
+        solution: plainHtml(solution.solution)
+      };
+    });
+    // 助手命令使用独立通道，保留原有题库消息和作答行为。
+    const agentMessages = panel.webview.onDidReceiveMessage((message) => {
+      if (typeof message?.command === "string" && message.command.startsWith("agent."))
+        void agent.handle(message);
+    });
     // 标签页关闭后释放消息监听器，允许下一次正常重新打开。
     const disposeListener = panel.onDidDispose(() => {
       messageDisposable.dispose();
+      agentMessages.dispose();
+      agent.dispose();
       if (this._editorPanel === panel)
         this._editorPanel = void 0;
       if (webview.panel === panel)
         webview.panel = void 0;
     });
-    this._context.subscriptions.push(panel, messageDisposable, disposeListener);
+    this._context.subscriptions.push(panel, messageDisposable, agentMessages, disposeListener);
     webview.setWebviewHtml(this._context.extensionPath);
   }
   // 点击左侧入口时打开编辑器题库，并自动收起入口侧栏。
