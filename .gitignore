@@ -1,0 +1,14 @@
+/node_modules/
+/out/
+/dist/
+*.vsix
+.DS_Store
+.env
+.env.*
+!.env.example
+.vscode/settings.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.log

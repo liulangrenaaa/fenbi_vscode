@@ -1,0 +1,10 @@
+.vscode/**
+src/**
+scripts/**
+upstream/**
+node_modules/**
+dist/**
+.gitignore
+.vscodeignore
+package-lock.json
+**/*.map

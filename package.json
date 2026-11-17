@@ -1,0 +1,171 @@
+{
+  "name": "luban-practice",
+  "displayName": "鲁班练习",
+  "description": "鲁班练习：基于粉笔题库的行测、申论学习工具（本地改造版）",
+  "icon": "resources/dark/fish.png",
+  "version": "1.2.4",
+  "license": "ISC",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "摸鱼",
+    "fish",
+    "学习",
+    "考公",
+    "公务员",
+    "做题"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "lubanPracticeBar",
+          "title": "鲁班练习",
+          "icon": "resources/dark/fenbi.svg"
+        }
+      ]
+    },
+    "views": {
+      "lubanPracticeBar": [
+        {
+          "type": "webview",
+          "id": "lubanPractice.mainView",
+          "name": "鲁班练习"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "lubanPractice.openWebview",
+        "title": "打开鲁班练习"
+      },
+      {
+        "command": "lubanPractice.refreshEntry",
+        "title": "刷新",
+        "icon": {
+          "light": "resources/light/refresh.svg",
+          "dark": "resources/dark/refresh.svg"
+        }
+      },
+      {
+        "command": "lubanPractice.toggleDisguise",
+        "title": "智能伪装",
+        "icon": {
+          "light": "resources/light/disguise.svg",
+          "dark": "resources/dark/disguise.svg"
+        }
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "lubanPractice.refreshEntry",
+          "group": "navigation",
+          "when": "view == lubanPractice.mainView"
+        },
+        {
+          "command": "lubanPractice.toggleDisguise",
+          "group": "navigation",
+          "when": "view == lubanPractice.mainView"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "鲁班练习",
+      "properties": {
+        "lubanPractice.cookie": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "cookie，必填，请修改后刷新",
+          "editPresentation": "multilineText"
+        },
+        "lubanPractice.leaderboardApiUrl": {
+          "type": "string",
+          "default": "https://qipai.work/fenbi-api",
+          "markdownDescription": "排行榜服务地址，默认使用已部署的线上服务。本地联调可改为 http://127.0.0.1:3102"
+        },
+        "lubanPractice.color": {
+          "type": "string",
+          "default": "#ffffff",
+          "markdownDescription": "自定义字体color颜色，请填写色值，非中文！请修改后刷新"
+        },
+        "lubanPractice.backgroundColor": {
+          "type": "string",
+          "default": "#21222b",
+          "markdownDescription": "自定义背景bgColor颜色，请填写色值，非中文！请修改后刷新"
+        },
+        "lubanPractice.needLineThrough": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "开启后，选项后会增加排除按钮，点击即可给当前选项增加中划线"
+        },
+        "lubanPractice.fontSize": {
+          "type": "number",
+          "default": 12,
+          "markdownDescription": "自定义字体大小（单位px），默认12，请修改后刷新"
+        },
+        "lubanPractice.correctColor": {
+          "type": "string",
+          "default": "#30c9a1",
+          "markdownDescription": "自定义解答页正确答案颜色，请填写色值"
+        },
+        "lubanPractice.wrongColor": {
+          "type": "string",
+          "default": "#ff4d4f",
+          "markdownDescription": "自定义解答页错误答案颜色，请填写色值"
+        },
+        "lubanPractice.buttonBorderColor": {
+          "type": "string",
+          "default": "#ffffff",
+          "markdownDescription": "自定义按钮、Card 和解析虚线框边框颜色，请填写色值"
+        },
+        "lubanPractice.canvasBrushColor": {
+          "type": "string",
+          "default": "red",
+          "markdownDescription": "画板默认画笔颜色，例如 red 或 #ff0000"
+        },
+        "lubanPractice.canvasBrushWidth": {
+          "type": "number",
+          "default": 3,
+          "markdownDescription": "画板默认画笔粗细（单位px）"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "import-installed": "node scripts/import-installed.mjs",
+    "build": "node scripts/build.mjs",
+    "check": "node scripts/check.mjs",
+    "package": "npm run build && vsce package --no-dependencies --out dist/luban-practice-1.2.4-local.vsix"
+  },
+  "devDependencies": {
+    "@babel/generator": "7.28.5",
+    "@babel/parser": "7.28.5",
+    "@vscode/vsce": "4.1.1",
+    "prettier": "3.10.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/liulangrenaaa/fenbi_vscode.git"
+  },
+  "publisher": "lucas-local",
+  "config": {
+    "commitizen": {
+      "path": "git-cz"
+    }
+  },
+  "husky": {
+    "hooks": {
+      "pre-commit": "echo \"[Husky] pre-commit\"",
+      "commit-msg": "commitlint",
+      "pre-push": "npm run changelog"
+    }
+  },
+  "private": true
+}
