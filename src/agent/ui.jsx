@@ -9,22 +9,40 @@ import {
   Link2,
   Copy,
   Check,
+  Eye,
+  EyeOff,
+  ListOrdered,
+  Pause,
+  Play,
 } from "lucide";
 import { renderAnswerMarkdown } from "./markdown.mjs";
+import { imageMarker, normalizeImageUrl } from "./image-context.mjs";
 import "./ui.css";
 
 export { renderAnswerMarkdown };
 
-// 从题库 HTML 中提取文本及图片，不将题库原始对象发给模型。
-export function extractHtml(html) {
+const PREPARE_RETRY_DELAY = 30000;
+const PREPARE_MAX_RETRIES = 10;
+
+// 提取文本并保留图片原位置，整道题共用编号，防止选项中的分数丢失。
+export function extractHtml(html, images = []) {
   const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
   doc.querySelectorAll("script,style").forEach((node) => node.remove());
   doc.querySelectorAll("br,p,div,tr").forEach((node) => node.append("\n"));
+  // 按地址去重但保留所有引用位置，无法解析的地址交给宿主明确报错。
+  for (const image of Array.from(doc.images)) {
+    const raw = image.getAttribute("src") || "";
+    const url = normalizeImageUrl(raw) || raw;
+    let index = images.indexOf(url);
+    if (index === -1) {
+      index = images.length;
+      images.push(url);
+    }
+    image.replaceWith(doc.createTextNode(` ${imageMarker(index)} `));
+  }
   return {
     text: (doc.body.textContent || "").trim().slice(0, 48000),
-    images: Array.from(doc.images)
-      .map((image) => image.getAttribute("src"))
-      .filter((url) => /^https?:\/\//i.test(url || "")),
+    images,
   };
 }
 
@@ -37,7 +55,8 @@ export function buildQuestion({
   number,
 }) {
   const id = String(question.globalId || question.id || "");
-  const stem = extractHtml(question.content);
+  const images = [];
+  const stem = extractHtml(question.content, images);
   const indexes = Array.isArray(question.materialIndexes)
     ? question.materialIndexes
     : [];
@@ -54,10 +73,11 @@ export function buildQuestion({
         : materialItems
             .map((item) => item.content || item.materialContent || "")
             .join("\n"),
+    images,
   );
   const options = (question.accessories || [])
     .flatMap((item) => item.options || [])
-    .map(extractHtml);
+    .map((option) => extractHtml(option, images));
   const rawChoice = question.userAnswer?.choice;
   const choices = Array.isArray(rawChoice)
     ? rawChoice
@@ -70,13 +90,7 @@ export function buildQuestion({
     content: stem.text,
     materials: material.text,
     options: options.map((option) => option.text),
-    images: [
-      ...new Set([
-        ...stem.images,
-        ...material.images,
-        ...options.flatMap((option) => option.images),
-      ]),
-    ].slice(0, 12),
+    images,
     userAnswer: choices
       .filter((choice) => /^\d+$/.test(String(choice)))
       .map((choice) => String.fromCharCode(65 + Number(choice)))
@@ -94,6 +108,7 @@ export function createAgentUI(React, vscode) {
     useRef,
     useContext,
     createContext,
+    useLayoutEffect,
   } = React;
   const Context = createContext(null);
 
@@ -196,14 +211,17 @@ export function createAgentUI(React, vscode) {
     function select() {
       if (question.id) context?.select(question);
     }
-    // 原题库使用非受控选项，从实际选中状态同步最新答案，不拦截原有提交消息。
+    // 单选只取本次选项，避免捕获阶段旧选项未取消；多选汇总勾选状态，不改动题库作答。
     function changeAnswer(event) {
       if (!["radio", "checkbox"].includes(event.target.type)) return;
-      const checked = Array.from(
-        event.currentTarget.querySelectorAll(
-          'input[type="radio"]:checked,input[type="checkbox"]:checked',
-        ),
-      );
+      const checked =
+        event.target.type === "radio"
+          ? [event.target]
+          : Array.from(
+              event.currentTarget.querySelectorAll(
+                'input[type="checkbox"]:checked',
+              ),
+            );
       const value = checked
         .map((input) => Number(input.value))
         .filter(Number.isFinite)
@@ -215,6 +233,7 @@ export function createAgentUI(React, vscode) {
     return (
       <div
         data-agent-question={question.id}
+        data-agent-thread={question.threadId}
         className={
           context?.question?.threadId === question.threadId
             ? "la-question-active"
@@ -225,6 +244,76 @@ export function createAgentUI(React, vscode) {
         onChangeCapture={changeAnswer}
       >
         {props.children}
+      </div>
+    );
+  }
+
+  // 在实际练习工具栏提供批量预解析入口，离开练习时停止未完成的队列。
+  function PracticeAgentControls() {
+    const context = useContext(Context);
+    const controls = context?.controls;
+    const commands = context?.commands;
+    const element = useRef(null);
+    // 工具栏换行时为题干留出真实高度，窄窗口也不会遮住第一道题。
+    useLayoutEffect(() => {
+      const toolbar = element.current?.closest(".top-bar");
+      const container = toolbar?.closest(".question-container");
+      if (!container) return;
+      // 跟随现有固定工具栏的尺寸调整内容起点。
+      function measure() {
+        container.style.setProperty(
+          "--la-toolbar-height",
+          `${toolbar.getBoundingClientRect().height + 8}px`,
+        );
+      }
+      measure();
+      const observer = new ResizeObserver(measure);
+      observer.observe(toolbar);
+      return () => {
+        observer.disconnect();
+        container.style.removeProperty("--la-toolbar-height");
+      };
+    }, []);
+    // 页面离开或交卷后不再继续请求旧练习的题目。
+    useEffect(() => () => commands?.current?.leavePractice(), [commands]);
+    if (!context) return null;
+    const running = controls?.batch?.status === "running";
+    const paused = controls?.batch?.status === "paused";
+    return (
+      <div className="la-practice-controls" ref={element}>
+        <button
+          type="button"
+          className="la-prepare-button"
+          disabled={
+            !controls?.ready ||
+            (!running && controls?.busy) ||
+            !context.question
+          }
+          onClick={() =>
+            running
+              ? commands.current?.pauseBatch()
+              : commands.current?.startBatch()
+          }
+        >
+          <Icon
+            icon={running ? Pause : paused ? Play : ListOrdered}
+            size={15}
+          />
+          <span>
+            {running ? "暂停预解析" : paused ? "继续预解析" : "预解析本组题目"}
+          </span>
+        </button>
+        {controls?.batch && (
+          <span className="la-practice-progress" role="status">
+            已就绪 {controls.batch.completed}/{controls.batch.total}
+            {controls.batch.failed > 0
+              ? ` · 失败 ${controls.batch.failed}`
+              : ""}
+            {controls.batch.retry && controls.batch.status === "running"
+              ? ` · 30 秒后重试 ${controls.batch.retry.attempt}/${PREPARE_MAX_RETRIES}`
+              : ""}
+          </span>
+        )}
       </div>
     );
   }
@@ -246,6 +335,8 @@ export function createAgentUI(React, vscode) {
     const drag = useRef(null);
     const ratioRef = useRef(ratio);
     const registry = useRef(new Map());
+    const commands = useRef(null);
+    const [controls, setControls] = useState(null);
     const minRatio = width > 650 ? 260 / width : 0.1;
     const maxRatio = width > 650 ? (width - 326) / width : 0.9;
     const visibleRatio = Math.min(maxRatio, Math.max(minRatio, ratio));
@@ -338,9 +429,22 @@ export function createAgentUI(React, vscode) {
         );
       };
     }, []);
+    // 按实际页面顺序读取已注册题目，不受用户点击顺序和材料分组编号影响。
+    const getQuestions = useCallback(() => {
+      const seen = new Set();
+      return Array.from(
+        workspace.current?.querySelectorAll("[data-agent-thread]") || [],
+      )
+        .map((element) => registry.current.get(element.dataset.agentThread))
+        .filter((item) => {
+          if (!item || seen.has(item.threadId)) return false;
+          seen.add(item.threadId);
+          return true;
+        });
+    }, []);
     const value = useMemo(
-      () => ({ question, register, select: setQuestion }),
-      [question, register],
+      () => ({ question, register, select: setQuestion, controls, commands }),
+      [question, register, controls],
     );
     return (
       <Context.Provider value={value}>
@@ -351,7 +455,14 @@ export function createAgentUI(React, vscode) {
           style={{ "--la-agent-width": `${visibleRatio * 100}%` }}
         >
           <div className="la-agent-slot" hidden={!open || disguised}>
-            <AgentPanel question={question} onClose={() => setOpen(false)} />
+            <AgentPanel
+              question={question}
+              onClose={() => setOpen(false)}
+              onOpen={() => setOpen(true)}
+              getQuestions={getQuestions}
+              commands={commands}
+              onControls={setControls}
+            />
           </div>
           <div
             className="la-splitter"
@@ -388,8 +499,15 @@ export function createAgentUI(React, vscode) {
     );
   }
 
-  // 展示 OpenCode 模型、当前题目、流式对话和停止生成控件。
-  function AgentPanel({ question, onClose }) {
+  // 管理逐题会话、顺序预解析及防剧透显示，不改动题库选项和提交行为。
+  function AgentPanel({
+    question,
+    onClose,
+    onOpen,
+    getQuestions,
+    commands,
+    onControls,
+  }) {
     const [models, setModels] = useState([]);
     const [model, setModel] = useState("");
     const [connection, setConnection] = useState("connecting");
@@ -399,39 +517,252 @@ export function createAgentUI(React, vscode) {
     const [error, setError] = useState("");
     const [drafts, setDrafts] = useState({});
     const [intent, setIntent] = useState("auto");
+    const [batch, setBatch] = useState(null);
+    const [visibility, setVisibility] = useState({
+      threadId: "",
+      visible: false,
+    });
     const list = useRef(null);
     const followBottom = useRef(true);
     const active = useRef(null);
+    const threadsRef = useRef(threads);
+    const batchRef = useRef(null);
+    const selectedRef = useRef("");
     const currentId = question?.threadId || "";
     const draft = drafts[currentId] || "";
     const thread = threads[currentId] || { messages: [] };
     const messages = thread.messages;
     const currentBusy = busy?.threadId === currentId;
+    const showAnswers = visibility.threadId === currentId && visibility.visible;
+    selectedRef.current = currentId;
 
     // 向宿主发送助手专属消息，模型鉴权始终由 OpenCode 管理。
     function post(command, postData = {}) {
       vscode.postMessage({ command, postData });
     }
-    // 更新指定会话，旧题的增量不会显示到新题。
+    // 同步更新缓存和视图，连续到达的增量与完成事件也能读取最新回答。
     function updateThread(threadId, update) {
-      setThreads((previous) => {
-        const next = {
-          ...previous,
-          [threadId]: update(previous[threadId] || { messages: [] }),
-        };
-        const keys = Object.keys(next);
-        if (keys.length > 100)
-          delete next[
-            keys.find((key) => key !== currentId && key !== threadId)
-          ];
-        return next;
+      const previous = threadsRef.current;
+      const next = {
+        ...previous,
+        [threadId]: update(previous[threadId] || { messages: [] }),
+      };
+      const keys = Object.keys(next);
+      if (keys.length > 300)
+        delete next[
+          keys.find((key) => key !== selectedRef.current && key !== threadId)
+        ];
+      threadsRef.current = next;
+      setThreads(next);
+    }
+    // 仅题目内容决定缓存是否可复用，手动作答改变不会使独立解析失效。
+    function fingerprint(item) {
+      return JSON.stringify([
+        item.threadId,
+        item.content,
+        item.materials,
+        item.options,
+        item.images,
+      ]);
+    }
+    // 复制队列进度用于展示，避免让后续任务改变已渲染的状态对象。
+    function publishBatch() {
+      const queue = batchRef.current;
+      setBatch(
+        queue
+          ? {
+              status: queue.status,
+              total: queue.total,
+              completed: queue.completed,
+              failed: queue.failed,
+              current: queue.index,
+              retry: queue.retry,
+            }
+          : null,
+      );
+    }
+    // 所有手动和自动请求使用同一条发送通道，保证每题只有一个生成任务。
+    function dispatch(
+      item,
+      content,
+      requestIntent,
+      requestModel,
+      prepared = false,
+    ) {
+      const request = {
+        requestId: crypto.randomUUID(),
+        threadId: item.threadId,
+        prepared,
+        fingerprint: fingerprint(item),
+        output: "",
+        failed: false,
+      };
+      active.current = request;
+      setBusy(request);
+      updateThread(item.threadId, (previous) => ({
+        ...previous,
+        messages: [
+          ...previous.messages.slice(-78),
+          { role: "user", content: prepared ? "预解析本题" : content },
+          { role: "assistant", content: "", requestId: request.requestId },
+        ],
+        status: "正在发送给 OpenCode…",
+        error: "",
+        reference: "",
+      }));
+      post("agent.send", {
+        requestId: request.requestId,
+        threadId: request.threadId,
+        text: content,
+        intent: requestIntent,
+        model: requestModel,
+        question: item,
       });
     }
-
-    // 订阅助手事件后才初始化，避免错过快速返回的模型列表。
+    // 为当前失败题等待固定间隔，暂停或离页后不会继续启动重试。
+    function waitForRetry(queue) {
+      clearTimeout(queue.retryTimer);
+      queue.retryTimer = null;
+      if (batchRef.current !== queue || queue.status !== "running") return;
+      queue.retryTimer = setTimeout(() => {
+        queue.retryTimer = null;
+        advanceBatch(queue);
+      }, PREPARE_RETRY_DELAY);
+    }
+    // 同一题成功或耗尽重试次数后再取下一题，不切换用户正在看的题目。
+    function advanceBatch(queue) {
+      if (
+        batchRef.current !== queue ||
+        queue.status !== "running" ||
+        active.current ||
+        queue.retryTimer !== null
+      )
+        return;
+      const available = new Map(
+        getQuestions().map((item) => [item.threadId, item]),
+      );
+      const next = queue.items[queue.index];
+      if (!next) {
+        queue.status = "done";
+        publishBatch();
+        return;
+      }
+      const item = available.get(next);
+      if (!item) {
+        leavePractice();
+        return;
+      }
+      queue.retry = null;
+      publishBatch();
+      dispatch(
+        item,
+        "请独立分析这道题，给出正确答案和关键解析；有题图时先读图。不要替我选择选项或提交作答。",
+        "explain",
+        queue.model,
+        true,
+      );
+    }
+    // 启动或恢复预解析，保留暂停前的重试预算并跳过已有完整解析。
+    function startBatch() {
+      if (
+        active.current ||
+        connection !== "connected" ||
+        !document.querySelector(".la-quiz .la-practice-controls") ||
+        document.querySelector(".la-workspace")?.dataset.disguised === "true"
+      )
+        return;
+      const previous = batchRef.current;
+      if (previous?.status === "running") return;
+      if (previous?.status === "paused") {
+        previous.status = "running";
+        onOpen();
+        if (previous.retry) waitForRetry(previous);
+        else advanceBatch(previous);
+        publishBatch();
+        return;
+      }
+      const items = getQuestions();
+      if (!items.length) return;
+      const pending = items.filter(
+        (item) =>
+          threadsRef.current[item.threadId]?.preparedFingerprint !==
+          fingerprint(item),
+      );
+      const queue = {
+        items: pending.map((item) => item.threadId),
+        index: 0,
+        total: items.length,
+        completed: items.length - pending.length,
+        failed: 0,
+        status: "running",
+        model,
+        retry: null,
+        retryCount: 0,
+        retryTimer: null,
+      };
+      setVisibility({ threadId: currentId, visible: false });
+      batchRef.current = queue;
+      onOpen();
+      publishBatch();
+      advanceBatch(queue);
+    }
+    // 暂停时取消生成和重试等待，恢复后仍沿用当前题目的重试次数。
+    function pauseBatch() {
+      const queue = batchRef.current;
+      if (queue?.status === "running") {
+        queue.status = "paused";
+        clearTimeout(queue.retryTimer);
+        queue.retryTimer = null;
+        publishBatch();
+      }
+      if (active.current?.prepared) post("agent.stop");
+    }
+    // 离开练习时取消重试定时器，迟到的完成事件不会启动旧页面的下一题。
+    function leavePractice() {
+      clearTimeout(batchRef.current?.retryTimer);
+      batchRef.current = null;
+      setBatch(null);
+      if (active.current?.prepared) post("agent.stop");
+    }
+    // 停止按钮同时暂停队列，避免停止一题后立即又发出下一题请求。
+    function stop() {
+      if (active.current?.prepared) pauseBatch();
+      else post("agent.stop");
+    }
+    // 将练习工具栏命令绑定到当前状态，引用本身不触发上下文重新注册。
+    commands.current = { startBatch, pauseBatch, leavePractice, hideAnswer };
+    // 向题库工具栏发布连接和进度，保留左侧助手收起时的运行状态。
     useEffect(() => {
-      // 依据请求编号处理增量，避免停止、新会话后的迟到事件污染页面。
+      onControls({
+        ready: connection === "connected",
+        busy: Boolean(busy),
+        batch,
+      });
+    }, [connection, busy, batch, onControls]);
+    // 每次切题重新隐藏回答，编号变化的首帧也不会渲染另一题的内容。
+    useEffect(() => {
+      setVisibility({ threadId: currentId, visible: false });
+    }, [currentId]);
+    // 只有用户主动勾选才展示正文，隐藏时不渲染正文或复制按钮。
+    function changeVisibility(event) {
+      setVisibility({ threadId: currentId, visible: event.target.checked });
+    }
+    // 快捷命令只隐藏本题回答，重复执行也不会意外显示答案。
+    function hideAnswer() {
+      setVisibility({ threadId: currentId, visible: false });
+    }
+
+    // 订阅助手事件并在卸载时取消重试等待，避免旧页面继续发送模型请求。
+    useEffect(() => {
+      // 按请求编号处理回答，预解析失败后最多等待重试十次并保持逐题串行。
       function receive(event) {
+        if (event.data?.command === "agent.action") {
+          if (event.data.data?.action === "hideAnswer")
+            commands.current?.hideAnswer();
+          else if (event.data.data?.action === "prepareGroup")
+            commands.current?.startBatch();
+          return;
+        }
         if (event.data?.command !== "agent.event") return;
         const data = event.data.data || {};
         if (data.type === "config") {
@@ -463,6 +794,7 @@ export function createAgentUI(React, vscode) {
         )
           return;
         if (data.type === "delta") {
+          request.output += data.text;
           updateThread(data.threadId, (previous) => ({
             ...previous,
             status: "",
@@ -483,6 +815,7 @@ export function createAgentUI(React, vscode) {
             status: data.message,
           }));
         } else if (data.type === "error") {
+          request.failed = true;
           updateThread(data.threadId, (previous) => ({
             ...previous,
             error: data.message,
@@ -490,15 +823,65 @@ export function createAgentUI(React, vscode) {
         } else if (data.type === "done") {
           active.current = null;
           setBusy(null);
+          const succeeded =
+            !data.cancelled &&
+            !request.failed &&
+            data.complete !== false &&
+            Boolean(request.output.trim());
           updateThread(data.threadId, (previous) => ({
             ...previous,
             status: data.cancelled ? "已停止生成。" : "",
+            error:
+              request.prepared && !succeeded && !data.cancelled
+                ? previous.error || "预解析未完整生成，请重试。"
+                : previous.error,
+            ...(request.prepared && succeeded
+              ? { preparedFingerprint: request.fingerprint }
+              : {}),
           }));
+          if (request.prepared) {
+            const queue = batchRef.current;
+            if (queue) {
+              if (succeeded) {
+                queue.completed += 1;
+                queue.index += 1;
+                queue.retryCount = 0;
+                queue.retry = null;
+              } else if (!data.cancelled) {
+                if (queue.retryCount < PREPARE_MAX_RETRIES) {
+                  queue.retryCount += 1;
+                  queue.retry = {
+                    threadId: request.threadId,
+                    attempt: queue.retryCount,
+                  };
+                  waitForRetry(queue);
+                  publishBatch();
+                  return;
+                }
+                queue.failed += 1;
+                queue.index += 1;
+                queue.retryCount = 0;
+                queue.retry = null;
+                updateThread(data.threadId, (previous) => ({
+                  ...previous,
+                  error: `${previous.error} 自动重试已达 ${PREPARE_MAX_RETRIES} 次，请稍后手动重试。`,
+                }));
+              } else if (queue.status === "running") {
+                queue.status = "paused";
+              }
+              publishBatch();
+              queueMicrotask(() => advanceBatch(queue));
+            }
+          }
         }
       }
       window.addEventListener("message", receive);
       post("agent.init");
-      return () => window.removeEventListener("message", receive);
+      return () => {
+        window.removeEventListener("message", receive);
+        clearTimeout(batchRef.current?.retryTimer);
+        batchRef.current = null;
+      };
     }, []);
 
     // 保持用户正在阅读的滚动位置，位于底部时才跟随新输出。
@@ -523,39 +906,22 @@ export function createAgentUI(React, vscode) {
       setError("");
       post("agent.models");
     }
-    // 清空当前题目的对话并让下次提问创建全新 OpenCode 会话。
+    // 清空当前会话和预解析等待，让下次提问创建全新的 OpenCode 会话。
     function clear() {
       if (!currentId || busy) return;
       post("agent.clear", { threadId: currentId });
       updateThread(currentId, () => ({ messages: [] }));
+      leavePractice();
     }
-    // 提交当前题目的问题，不自动点击选项或提交试卷。
+    // 手动提问先暂停自动重试，保持请求串行且不改动题库作答。
     function send(event) {
       event?.preventDefault();
       const content = draft.trim();
-      if (!question || !content || busy || connection !== "connected") return;
-      const requestId = crypto.randomUUID();
-      const request = { requestId, threadId: currentId };
-      active.current = request;
-      setBusy(request);
-      updateThread(currentId, (previous) => ({
-        messages: [
-          ...previous.messages.slice(-78),
-          { role: "user", content },
-          { role: "assistant", content: "", requestId },
-        ],
-        status: "正在发送给 OpenCode…",
-        error: "",
-        reference: "",
-      }));
+      if (!question || !content || active.current || connection !== "connected")
+        return;
+      if (batchRef.current?.status === "running") pauseBatch();
+      dispatch(question, content, intent, model);
       setDrafts((previous) => ({ ...previous, [currentId]: "" }));
-      post("agent.send", {
-        ...request,
-        text: content,
-        intent,
-        model,
-        question,
-      });
     }
     // 输入过程中保留每道题尚未发送的草稿。
     function changeDraft(event) {
@@ -651,6 +1017,30 @@ export function createAgentUI(React, vscode) {
             ))}
           </select>
         </div>
+        {batch && (
+          <div className="la-batch-status" role="status">
+            <span>
+              {batch.status === "running"
+                ? "预解析中"
+                : batch.status === "paused"
+                  ? "预解析已暂停"
+                  : "预解析结束"}
+              {" · "}
+              {batch.completed}/{batch.total}
+              {batch.failed > 0 ? ` · 失败 ${batch.failed}` : ""}
+              {batch.retry && batch.status === "running"
+                ? ` · 30 秒后重试 ${batch.retry.attempt}/${PREPARE_MAX_RETRIES}`
+                : ""}
+            </span>
+            {batch.status === "running" && (
+              <ToolButton
+                label="暂停预解析"
+                icon={Pause}
+                onClick={pauseBatch}
+              />
+            )}
+          </div>
+        )}
         <section className="la-context" aria-label="当前题目上下文">
           <div className="la-context-title">
             <Icon icon={Link2} size={13} />
@@ -664,9 +1054,15 @@ export function createAgentUI(React, vscode) {
           {question && (
             <p title={question.content}>{question.content || "图片题"}</p>
           )}
-          {question?.userAnswer && (
+          {(question?.images.length > 0 || question?.userAnswer) && (
             <span className="la-context-answer">
-              已选 {question.userAnswer}
+              {[
+                question.images.length > 0 &&
+                  `含 ${question.images.length} 张题图`,
+                question.userAnswer && `已选 ${question.userAnswer}`,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </span>
           )}
         </section>
@@ -682,11 +1078,30 @@ export function createAgentUI(React, vscode) {
             </button>
           </div>
         )}
+        <div className="la-answer-filter">
+          {thread.preparedFingerprint ===
+            (question && fingerprint(question)) && (
+            <span className="la-prepared-label">解析已就绪</span>
+          )}
+          <label
+            className="la-answer-toggle"
+            title={showAnswers ? "隐藏回答" : "显示回答"}
+          >
+            <input
+              type="checkbox"
+              aria-label="显示 Agents 回答"
+              checked={showAnswers}
+              onChange={changeVisibility}
+              disabled={!question}
+            />
+            <Icon icon={showAnswers ? Eye : EyeOff} size={18} />
+          </label>
+        </div>
         <div
           className="la-transcript"
           ref={list}
           onScroll={scroll}
-          aria-live="polite"
+          aria-live={showAnswers ? "polite" : "off"}
           aria-relevant="additions text"
         >
           {!messages.length && (
@@ -702,21 +1117,27 @@ export function createAgentUI(React, vscode) {
             >
               <div className="la-message-header">
                 <span>{message.role === "user" ? "你" : "OpenCode"}</span>
-                {message.role === "assistant" && (
+                {message.role === "assistant" && showAnswers && (
                   <CopyButton content={message.content} />
                 )}
               </div>
               {message.role === "user" ? (
                 <div className="la-user-text">{message.content}</div>
-              ) : (
+              ) : showAnswers ? (
                 <Markdown content={message.content} />
+              ) : (
+                <div className="la-answer-hidden">
+                  <Icon icon={EyeOff} size={14} />
+                  <span>回答已隐藏</span>
+                </div>
               )}
               {message.role === "assistant" &&
+                showAnswers &&
                 !message.content &&
                 currentBusy && <span className="la-pending">正在处理…</span>}
             </article>
           ))}
-          {thread.reference && (
+          {thread.reference && showAnswers && (
             <div className="la-reference">
               <Icon icon={Link2} size={12} />
               {thread.reference}
@@ -724,7 +1145,11 @@ export function createAgentUI(React, vscode) {
           )}
           {thread.status && (
             <div className="la-status" role="status">
-              {thread.status}
+              {showAnswers
+                ? thread.status
+                : currentBusy
+                  ? "正在准备解析…"
+                  : "已停止生成。"}
             </div>
           )}
           {thread.error && (
@@ -771,7 +1196,7 @@ export function createAgentUI(React, vscode) {
               <button
                 className="la-send la-stop"
                 type="button"
-                onClick={() => post("agent.stop")}
+                onClick={stop}
                 title="停止生成"
                 aria-label="停止生成"
               >
@@ -797,5 +1222,5 @@ export function createAgentUI(React, vscode) {
     );
   }
 
-  return { Layout, QuestionShell };
+  return { Layout, QuestionShell, PracticeAgentControls };
 }

@@ -4,6 +4,12 @@ import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { client, methods, ndJsonStream } from "@agentclientprotocol/sdk";
 import { convert } from "html-to-text";
+import {
+  MAX_QUESTION_IMAGES,
+  imageMarker,
+  normalizeImageUrl,
+} from "./image-context.mjs";
+import { createQuestionImageLoader, QuestionImageError } from "./images.mjs";
 
 const SYSTEM = String.raw`你是鲁班练习的中文解题助手，帮助用户准备公务员行测考试。
 遵从用户本轮意图：只要提示时不泄露答案；需要解析时先给答案，再解释关键思路。
@@ -11,7 +17,8 @@ const SYSTEM = String.raw`你是鲁班练习的中文解题助手，帮助用户
 区分独立推导、题库参考和联网资料。没有参考时不得声称找到官方答案。
 你可以按需检索网页核对知识，但只有实际检索后才可声称已联网，并提供来源。
 这是刷题问答会话，不要读取、修改用户文件，不要使用终端、子代理或代码工具。
-不确定时明确说明，不得编造图形细节；图片只有链接且无法读取时，请用户补充图中信息。
+题干、材料和选项中的[图片N]对应随消息附上的编号题图，分数及公式可能完全包含在图片里，须结合原位置读取。
+不确定时明确说明，不得编造图形细节；若当前模型看不到或看不清图片，请明确提醒用户切换支持图片的模型或补充图中信息。
 不要操作作答、交卷或账号。
 
 【回答排版规范】
@@ -95,6 +102,14 @@ export function normalizeQuestion(value) {
   const category = /^[a-z]{2,12}$/.test(value.category)
     ? value.category
     : "xingce";
+  const images = Array.isArray(value.images) ? value.images : [];
+  if (images.length > MAX_QUESTION_IMAGES)
+    throw new AgentError(
+      `单题最多支持 ${MAX_QUESTION_IMAGES} 张题图，请分段提问。`,
+    );
+  const normalizedImages = images.map(normalizeImageUrl);
+  if (normalizedImages.some((url) => !url))
+    throw new AgentError("题目包含无法读取的图片地址，请刷新题目后重试。");
   return {
     id: String(value.id),
     category,
@@ -105,12 +120,7 @@ export function normalizeQuestion(value) {
     options: Array.isArray(value.options)
       ? value.options.slice(0, 30).map((item) => text(item, 6000))
       : [],
-    images: Array.isArray(value.images)
-      ? value.images
-          .slice(0, 12)
-          .filter((url) => /^https?:\/\//i.test(url))
-          .map((url) => text(url, 2000))
-      : [],
+    images: normalizedImages,
     userAnswer: text(value.userAnswer, 100),
   };
 }
@@ -127,7 +137,7 @@ export function questionPrompt(question) {
     question.userAnswer &&
       `用户当前选择（不代表正确答案）：${question.userAnswer}`,
     question.images.length &&
-      `含图题的图片链接（尚未提供图片像素）：\n${question.images.join("\n")}`,
+      `本题附有 ${question.images.length} 张编号题图。[图片N]表示图片在正文中的原位置，请结合随附图片读取，不要将编号当作题目数值。`,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -194,6 +204,7 @@ export class AgentController {
     this.active = null;
     this.disposed = false;
     this.ready = null;
+    this.loadImages = createQuestionImageLoader();
   }
 
   // 将助手事件定向发送给所属编辑器页面。
@@ -245,7 +256,7 @@ export class AgentController {
   // 启动 OpenCode 的 ACP 服务，并拒绝客户端文件和终端权限请求。
   async connect() {
     this.directory = this.prepareWorkspace();
-    const app = client({ name: "luban-practice", version: "1.2.8" });
+    const app = client({ name: "luban-practice", version: "1.2.15" });
     // 显式拒绝需要客户端授权的工具操作。
     app.onRequest(methods.client.session.requestPermission, async () => ({
       outcome: { outcome: "cancelled" },
@@ -283,12 +294,14 @@ export class AgentController {
       methods.agent.initialize,
       {
         protocolVersion: 1,
-        clientInfo: { name: "luban-practice", version: "1.2.8" },
+        clientInfo: { name: "luban-practice", version: "1.2.15" },
         clientCapabilities: {},
       },
       30000,
     );
     this.version = init.agentInfo?.version || "";
+    this.supportsImages =
+      init.agentCapabilities?.promptCapabilities?.image === true;
     const catalog = await this.createSession();
     this.catalog = catalog;
     this.updateOptions(catalog.configOptions);
@@ -477,11 +490,12 @@ export class AgentController {
 
   // 将内部传输错误转换为不含接口凭据的连接提示。
   publicError(error) {
-    if (error instanceof AgentError) return error.message.slice(0, 300);
+    if (error instanceof AgentError || error instanceof QuestionImageError)
+      return error.message.slice(0, 300);
     return "OpenCode 请求失败。请确认 WSL 中 opencode 可用且已登录，再点击重新连接。";
   }
 
-  // 将提问、当前题目和按需读取的题库解析发送到独立会话。
+  // 向独立会话发送题目，将生成超时报告为失败以便预解析队列按预算重试。
   async send(params) {
     if (this.active)
       throw new AgentError("已有回答正在生成，请等待完成或先停止。");
@@ -496,6 +510,7 @@ export class AgentController {
       threadId: question.threadId,
       cancelled: false,
       output: "",
+      abortController: new AbortController(),
     };
     // 将题库读取和取消操作联动，停止时无需等待题库接口超时。
     state.cancelledPromise = new Promise((resolve) => {
@@ -511,7 +526,7 @@ export class AgentController {
       if (!session) {
         session = await this.createSession();
         this.sessions.set(state.threadId, session);
-        if (this.sessions.size > 100)
+        if (this.sessions.size > 300)
           this.sessions.delete(this.sessions.keys().next().value);
       }
       state.sessionId = session.sessionId;
@@ -526,6 +541,21 @@ export class AgentController {
           configId: this.modelConfigId || "model",
           value: model,
         });
+      }
+      let images = [];
+      if (question.images.length) {
+        if (!this.supportsImages)
+          throw new AgentError(
+            "当前 OpenCode 连接不支持图片输入，请更新 OpenCode 后重新连接。",
+          );
+        this.emit("status", {
+          ...target,
+          message: `正在读取 ${question.images.length} 张题图…`,
+        });
+        images = await this.loadImages(question.images, {
+          signal: state.abortController.signal,
+        });
+        if (state.cancelled) return;
       }
       const hintsOnly =
         params.intent === "hint" ||
@@ -561,9 +591,15 @@ export class AgentController {
         ? "\n本轮只提供提示，不要给出选项答案或完整解答。"
         : "";
       if (state.cancelled) return;
-      this.emit("status", { ...target, message: "OpenCode 正在生成…" });
+      this.emit("status", {
+        ...target,
+        message: images.length
+          ? `已附加 ${images.length} 张题图，OpenCode 正在生成…`
+          : "OpenCode 正在生成…",
+      });
       // 超时复用停止流程，避免模型持续在后台生成。
       timer = setTimeout(() => {
+        state.timedOut = true;
         void this.stop();
       }, 180000);
       const result = await this.peer.request(methods.agent.session.prompt, {
@@ -573,8 +609,14 @@ export class AgentController {
             type: "text",
             text: `${SYSTEM}\n\n<当前题目>\n${questionPrompt(question)}\n</当前题目>\n${referenceText}\n\n用户提问：${prompt}${instruction}`,
           },
+          ...images.flatMap((image, index) => [
+            { type: "text", text: `题图 ${imageMarker(index)}：` },
+            image,
+          ]),
         ],
       });
+      state.complete =
+        result.stopReason === "end_turn" && Boolean(state.output.trim());
       if (!state.cancelled && result.stopReason !== "end_turn")
         this.emit("status", {
           ...target,
@@ -586,10 +628,20 @@ export class AgentController {
       if (!state.cancelled)
         this.emit("error", { ...target, message: this.publicError(error) });
     } finally {
+      state.abortController.abort();
       clearTimeout(timer);
       clearTimeout(state.cancelTimer);
       if (this.active === state) this.active = null;
-      this.emit("done", { ...target, cancelled: state.cancelled });
+      if (state.timedOut)
+        this.emit("error", {
+          ...target,
+          message: "OpenCode 生成超时（3 分钟），本次请求已停止。",
+        });
+      this.emit("done", {
+        ...target,
+        cancelled: state.cancelled && !state.timedOut,
+        complete: state.complete === true && !state.cancelled,
+      });
     }
   }
 
@@ -598,6 +650,7 @@ export class AgentController {
     const state = this.active;
     if (!state) return;
     state.cancelled = true;
+    state.abortController?.abort();
     state.resolveCancelled?.(null);
     this.emit("status", {
       requestId: state.requestId,
@@ -631,6 +684,7 @@ export class AgentController {
     this.disposed = true;
     if (this.active) {
       this.active.cancelled = true;
+      this.active.abortController?.abort();
       this.active.resolveCancelled?.(null);
       clearTimeout(this.active.cancelTimer);
     }

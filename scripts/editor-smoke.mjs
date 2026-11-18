@@ -153,6 +153,9 @@ const host = createHost();
 const sidebar = createSidebar(false);
 host.resolve(sidebar);
 assert.equal(host.panels.length, 0, "隐藏入口不应主动打开题库");
+host.commands.get("lubanPractice.hideAgentAnswer")();
+host.commands.get("lubanPractice.prepareQuestionGroup")();
+assert.equal(host.panels.length, 0, "助手快捷命令不能在未打开题库时新建页面");
 assert.doesNotMatch(sidebar.webview.html, /<script/, "侧栏不能再运行一份题库页面");
 sidebar.setVisible(true);
 const first = host.panels[0];
@@ -167,6 +170,12 @@ sidebar.setVisible(true);
 host.commands.get("lubanPractice.openWebview")();
 assert.equal(host.panels.length, 1, "反复点击必须复用标签页");
 assert.ok(first.reveals.every((column) => column === 1));
+host.commands.get("lubanPractice.hideAgentAnswer")();
+assert.equal(first.messages.at(-1).command, "agent.action");
+assert.equal(first.messages.at(-1).data.action, "hideAnswer");
+host.commands.get("lubanPractice.prepareQuestionGroup")();
+assert.equal(first.messages.at(-1).command, "agent.action");
+assert.equal(first.messages.at(-1).data.action, "prepareGroup");
 host.commands.get("lubanPractice.toggleDisguise")();
 await delay(80);
 assert.equal(first.messages.at(-1).command, "showDisguise");
@@ -180,6 +189,10 @@ host.commands.get("lubanPractice.refreshEntry")();
 const messageCount = first.messages.length;
 first.dispose();
 assert.equal(first.listenerCount, 0);
+host.commands.get("lubanPractice.hideAgentAnswer")();
+host.commands.get("lubanPractice.prepareQuestionGroup")();
+assert.equal(first.messages.length, messageCount, "关闭后快捷命令不能投递到旧页面");
+assert.equal(host.panels.length, 1, "关闭后快捷命令不能自动重开题库");
 host.commands.get("lubanPractice.openWebview")();
 await delay(80);
 assert.equal(first.messages.length, messageCount, "关闭后的延迟消息必须被丢弃");
@@ -196,6 +209,8 @@ const duplicate = createPanel();
 await restoredHost.restore(duplicate);
 assert.equal(duplicate.disposed, true);
 assert.equal(restored.listenerCount, 2);
+restoredHost.commands.get("lubanPractice.hideAgentAnswer")();
+assert.equal(restored.messages.at(-1).data.action, "hideAnswer");
 restored.dispose();
 assert.equal(restored.listenerCount, 0);
 restoredHost.commands.get("lubanPractice.openWebview")();
@@ -206,4 +221,13 @@ assert.ok(manifest.activationEvents.includes("onWebviewPanel:lubanPractice.edito
 for (const menu of manifest.contributes.menus["editor/title"]) {
   assert.equal(menu.when, "activeWebviewPanelId == lubanPractice.editor");
 }
-console.log("编辑器入口、单实例复用、消息通信、关闭重开及窗口恢复检查通过。");
+for (const [command, key] of [
+  ["lubanPractice.hideAgentAnswer", "alt+x"],
+  ["lubanPractice.prepareQuestionGroup", "alt+c"],
+]) {
+  assert.ok(manifest.contributes.commands.some((item) => item.command === command));
+  const binding = manifest.contributes.keybindings.find((item) => item.command === command);
+  assert.equal(binding.key, key);
+  assert.equal(binding.when, "activeWebviewPanelId == lubanPractice.editor && !terminalFocus && !inputFocus");
+}
+console.log("编辑器入口、命令与可自定义快捷键、单实例复用、消息通信、关闭重开及窗口恢复检查通过。");

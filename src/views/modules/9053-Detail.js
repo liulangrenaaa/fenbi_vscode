@@ -151,9 +151,11 @@
   n(2045);
   const y = n(2961),
     w = n(5114),
-    x = n(829);
+    x = n(829),
+    agent = n(9901);
   var C = (0, v.getVscodeApi)(),
     E = !1;
+  // 渲染实际练习及只读预解析入口，预解析不触发选项或交卷事件。
   t.Detail = function () {
     var e = l(d.Modal.useModal(), 2),
       t = e[0],
@@ -422,6 +424,7 @@
                   },
                   "跳转粉笔网址",
                 ),
+              1 === L && s.createElement(agent.PracticeAgentControls),
             ),
             "real" === J &&
               X &&

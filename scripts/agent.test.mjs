@@ -16,7 +16,7 @@ const {
 } = require("../out/agent/controller.js");
 
 // 创建通过真实 ACP 序列化通道通信的模型替身，避免测试消耗真实额度。
-function fixture(t) {
+function fixture(t, supportsImages = true) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "luban-agent-test-"));
   const events = [];
   const prompts = [];
@@ -28,7 +28,7 @@ function fixture(t) {
   // 声明测试 Agent 的协议能力。
   fake.onRequest(methods.agent.initialize, async () => ({
     protocolVersion: 1,
-    agentCapabilities: {},
+    agentCapabilities: { promptCapabilities: { image: supportsImages } },
     authMethods: [],
     agentInfo: { name: "OpenCode", version: "test" },
   }));
@@ -105,7 +105,11 @@ function fixture(t) {
           content: { type: "text", text: "B。\n\n解析：2 + 2 = 4。" },
         },
       });
-      return { stopReason: "end_turn" };
+      return {
+        stopReason: params.prompt[0].text.includes("返回截断")
+          ? "max_tokens"
+          : "end_turn",
+      };
     },
   );
   // ACP 的取消是通知，测试不向其返回伪造的 RPC 响应。
@@ -185,6 +189,24 @@ function send(f, id, content, intent = "auto", model = "provider/b") {
       text: content,
       intent,
       model,
+    },
+  });
+}
+
+// 使用图片题验证生产发送流程，而不绕过控制器直接调用协议。
+function sendImage(f) {
+  return f.controller.handle({
+    command: "agent.send",
+    postData: {
+      question: {
+        ...question(),
+        content: "数列：[图片1]，[图片2]",
+        options: ["[图片2]", "[图片1]"],
+        images: ["//fb.fbstatic.cn/one.png", "https://fb.fenbike.cn/two.png"],
+      },
+      threadId: "xingce:1001",
+      requestId: crypto.randomUUID(),
+      text: "读出题中的分数",
     },
   });
 }
@@ -311,6 +333,26 @@ test("停止使用 ACP 通知取消，取消后仍能继续提问", async (t) =>
   );
 });
 
+// 自动生成超时必须报告为失败，不能冒充用户取消而绕过队列重试。
+test("生成超时报告失败并允许后续重试，手动取消语义保持独立", async (t) => {
+  const f = fixture(t);
+  await f.controller.handle({ command: "agent.init" });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = send(f, "1001", "等待取消");
+  for (let attempt = 0; attempt < 100 && f.prompts.length === 0; attempt += 1)
+    await new Promise(setImmediate);
+  assert.equal(f.prompts.length, 1);
+  await new Promise(setImmediate);
+  t.mock.timers.tick(180000);
+  await pending;
+  assert.equal(f.events.at(-1).type, "done");
+  assert.equal(f.events.at(-1).cancelled, false);
+  assert.equal(f.events.at(-1).complete, false);
+  assert.match(f.events.at(-2).message, /生成超时/);
+  await send(f, "1001", "重新解析", "hint");
+  assert.equal(f.events.at(-1).complete, true);
+});
+
 test("非法题目拒绝后释放前端等待状态", async (t) => {
   const f = fixture(t);
   await f.controller.handle({
@@ -354,3 +396,124 @@ test(
     );
   },
 );
+
+test("题图经过真实 ACP 图片块传输，编号与题干选项保持对应", async (t) => {
+  const f = fixture(t);
+  const blocks = [
+    { type: "image", mimeType: "image/png", data: "AQID" },
+    { type: "image", mimeType: "image/png", data: "BAUG" },
+  ];
+  // 下载单独验证，此处聚焦协议中的二进制附件及顺序。
+  f.controller.loadImages = async (urls, { signal }) => {
+    assert.deepEqual(urls, [
+      "https://fb.fbstatic.cn/one.png",
+      "https://fb.fenbike.cn/two.png",
+    ]);
+    assert.equal(signal.aborted, false);
+    return blocks;
+  };
+  await sendImage(f);
+  const prompt = f.prompts[0].prompt;
+  assert.match(prompt[0].text, /数列：\[图片1\]，\[图片2\]/);
+  assert.match(prompt[0].text, /A\. \[图片2\]/);
+  assert.doesNotMatch(
+    prompt[0].text,
+    /https:\/\/fb\.|尚未提供图片像素|SECRET|HIDDEN/,
+  );
+  assert.deepEqual(prompt.slice(1), [
+    { type: "text", text: "题图 [图片1]：" },
+    blocks[0],
+    { type: "text", text: "题图 [图片2]：" },
+    blocks[1],
+  ]);
+  assert.ok(f.events.some((item) => item.message?.includes("已附加 2 张题图")));
+});
+
+test("不支持图片的 ACP 不会把缺少分数的题目发送给模型", async (t) => {
+  const f = fixture(t, false);
+  await sendImage(f);
+  assert.equal(f.prompts.length, 0);
+  assert.match(
+    f.events.find((item) => item.type === "error").message,
+    /不支持图片/,
+  );
+  assert.equal(f.events.at(-1).type, "done");
+});
+
+test("图片下载错误脱敏展示并允许继续提问", async (t) => {
+  const f = fixture(t);
+  // 模拟底层下载失败，确保外部异常不进入面板。
+  f.controller.loadImages = async () => {
+    throw new Error("SECRET_DOWNLOAD");
+  };
+  await sendImage(f);
+  assert.equal(f.prompts.length, 0);
+  assert.doesNotMatch(JSON.stringify(f.events), /SECRET_DOWNLOAD/);
+  assert.equal(f.events.at(-1).type, "done");
+  await send(f, "1002", "继续分析", "hint");
+  assert.equal(f.prompts.length, 1);
+});
+
+test(
+  "停止会立即中断图片读取，不向模型发送残缺题干",
+  { timeout: 2000 },
+  async (t) => {
+    const f = fixture(t);
+    let started;
+    let aborted = false;
+    const loading = new Promise((resolve) => {
+      started = resolve;
+    });
+    // 下载取消必须使等待立即结束，而非等图片接口超时。
+    f.controller.loadImages = async (_, { signal }) => {
+      started();
+      return new Promise((_, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            aborted = true;
+            reject(signal.reason);
+          },
+          { once: true },
+        );
+      });
+    };
+    const pending = sendImage(f);
+    await loading;
+    await f.controller.stop();
+    await pending;
+    assert.equal(aborted, true);
+    assert.equal(f.prompts.length, 0);
+    assert.equal(f.events.at(-1).cancelled, true);
+    await send(f, "1002", "继续", "hint");
+    assert.equal(f.prompts.length, 1);
+  },
+);
+
+// 截断回答虽有正文也不算预解析完成，避免缓存不完整的推导。
+test("完成事件区分正常回答与截断", async (t) => {
+  const f = fixture(t);
+  await send(f, "1001", "返回截断", "hint");
+  assert.equal(f.events.at(-1).complete, false);
+  await send(f, "1002", "正常返回", "hint");
+  assert.equal(f.events.at(-1).complete, true);
+});
+
+test("过多或无效题图明确拒绝，不静默丢弃图片导致编号错位", () => {
+  assert.throws(
+    () =>
+      normalizeQuestion({
+        ...question(),
+        images: Array(33).fill("https://fb.fbstatic.cn/x.png"),
+      }),
+    /最多支持 32/,
+  );
+  assert.throws(
+    () =>
+      normalizeQuestion({
+        ...question(),
+        images: ["data:image/png;base64,AQID"],
+      }),
+    /无法读取/,
+  );
+});

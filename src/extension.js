@@ -2573,6 +2573,14 @@ function activate(context) {
         data: null
       });
     }),
+    // 隐藏当前题目的助手回答，不改变题目选择或展开助手。
+    vscode7.commands.registerCommand("lubanPractice.hideAgentAnswer", () => {
+      provider.sendAgentAction("hideAnswer");
+    }),
+    // 通过当前练习页面启动预解析，快捷键由 VS Code 统一管理。
+    vscode7.commands.registerCommand("lubanPractice.prepareQuestionGroup", () => {
+      provider.sendAgentAction("prepareGroup");
+    }),
     vscode7.window.registerWebviewViewProvider("lubanPractice.mainView", provider, {
       webviewOptions: {
         retainContextWhenHidden: true
@@ -2590,6 +2598,14 @@ var MyWebviewProvider = class {
   // 保存扩展上下文，供编辑器题库加载资源和管理监听器。
   constructor(context) {
     this._context = context;
+  }
+  // 将快捷命令发送到已有题库，未打开题库时不新建页面。
+  sendAgentAction(action) {
+    if (this._editorPanel)
+      void this._editorPanel.webview.postMessage({
+        command: "agent.action",
+        data: { action }
+      });
   }
   // 复用唯一的题库标签页，并固定在第一个编辑器分组打开。
   openEditor() {

@@ -149,13 +149,15 @@
     g = n(8595),
     b = n(2961),
     y = n(5114),
-    w = n(829);
+    w = n(829),
+    agent = n(9901);
   n(2045);
   var x = (0, g.getVscodeApi)(),
     C = !1,
     E = function (e) {
       return String(e.globalId || e.id || "");
     };
+  // 在错题练习中提供预解析入口，保持原有手动作答和交卷流程。
   t.ErrorsDetail = function () {
     var e = l(f.Modal.useModal(), 2),
       t = e[0],
@@ -442,6 +444,7 @@
                 },
                 "交卷",
               ),
+            "question" === g && s.createElement(agent.PracticeAgentControls),
           ),
           s.createElement("div", null, te),
           "solution" === g &&

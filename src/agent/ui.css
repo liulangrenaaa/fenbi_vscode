@@ -45,7 +45,7 @@ body {
   box-sizing: border-box;
 }
 .la-quiz .question-container {
-  padding-top: 42px;
+  padding-top: var(--la-toolbar-height, 42px);
 }
 .la-quiz .question-container .top-bar {
   box-sizing: border-box;
@@ -208,6 +208,114 @@ body {
 .la-dot.la-connecting {
   background: #d7b45b;
 }
+.la-answer-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
+  min-height: 38px;
+  padding: 3px 12px;
+  flex-shrink: 0;
+}
+.la-answer-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-left: auto;
+  flex: 0 0 32px;
+  border: 1px solid var(--la-border);
+  border-radius: 4px;
+  color: var(--la-muted);
+  background: var(--la-panel);
+  cursor: pointer;
+}
+.la-answer-toggle:hover:not(:has(input:disabled)) {
+  background: var(--vscode-toolbar-hoverBackground, #ffffff16);
+  color: var(--la-fg);
+}
+.la-answer-toggle:has(input:checked) {
+  border-color: var(--la-accent);
+  color: var(--la-fg);
+}
+.la-answer-toggle:has(input:focus-visible) {
+  outline: 1px solid var(--la-accent);
+  outline-offset: 2px;
+}
+.la-answer-toggle:has(input:disabled) {
+  opacity: 0.45;
+  cursor: default;
+}
+.la-answer-toggle input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+.la-answer-toggle svg {
+  pointer-events: none;
+}
+.la-prepared-label {
+  color: var(--la-muted);
+  font-size: 11px;
+}
+.la-batch-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 12px;
+  border-top: 1px solid var(--la-border);
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--la-muted);
+}
+.la-batch-status > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.la-answer-hidden {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--la-muted);
+}
+.la-practice-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+  color: var(--primary-color, #fff);
+}
+.la-prepare-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 3px 8px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.la-prepare-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.la-practice-progress {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
 .la-context {
   margin: 0 12px;
   padding: 7px 0 10px;
@@ -333,7 +441,7 @@ body {
 }
 .la-markdown .katex {
   font-size: 1.08em;
-  line-height: normal;
+  line-height: 1.2;
   text-indent: 0;
 }
 .la-markdown .katex-display {

@@ -30593,6 +30593,7 @@
     ]);
     const l = i;
   },
+  // 将题库主题与助手隔离，避免全局背景和字号破坏公式排版。
   720: (e, t, n) => {
     "use strict";
 
@@ -30605,7 +30606,7 @@
       i = n.n(a)()(o());
     i.push([
       e.id,
-      ":root {\n  --primary-color: #ffffff;\n  --primary-backgroundColor: #21222b;\n  --primary-fontSize: 12px;\n  --answer-correct-color: #30c9a1;\n  --answer-wrong-color: #ff4d4f;\n  --button-border-color: #ffffff;\n  --card-border-color: #ffffff;\n}\n*:where(:not(.disguise-overlay):not(.disguise-overlay *)) {\n  color: var(--primary-color) !important;\n  font-size: var(--primary-fontSize);\n}\n*:where(:not(.disguise-overlay):not(.disguise-overlay *))::placeholder {\n  color: var(--primary-color) !important;\n}\n*:where(:not(.disguise-overlay):not(.disguise-overlay *)) img {\n  background: #ffffff !important;\n}\n*:where(:not(img):not(.ant-switch):not(.ant-switch *):not(.ant-color-picker-panel *):not(\n    .ant-color-picker-color-block *\n  ):not(.bg_transparent):not(.bg_transparent *):not(.disguise-overlay):not(\n    .disguise-overlay *\n  )) {\n  background: var(--primary-backgroundColor) !important;\n}\n.ant-btn,\n.ant-select-selector {\n  border-color: var(--button-border-color) !important;\n}\n.ant-card,\n.card-border {\n  border-color: var(--card-border-color) !important;\n}\n.bg_transparent,\n.bg_transparent * {\n  background: transparent !important;\n}\nbody {\n  padding: 0;\n  margin: 0;\n}\n",
+      ":root {\n  --primary-color: #ffffff;\n  --primary-backgroundColor: #21222b;\n  --primary-fontSize: 12px;\n  --answer-correct-color: #30c9a1;\n  --answer-wrong-color: #ff4d4f;\n  --button-border-color: #ffffff;\n  --card-border-color: #ffffff;\n}\n*:where(:not(.disguise-overlay):not(.disguise-overlay *):not(.la-agent):not(.la-agent *)) {\n  color: var(--primary-color) !important;\n  font-size: var(--primary-fontSize);\n}\n*:where(:not(.disguise-overlay):not(.disguise-overlay *):not(.la-agent):not(.la-agent *))::placeholder {\n  color: var(--primary-color) !important;\n}\n*:where(:not(.disguise-overlay):not(.disguise-overlay *):not(.la-agent):not(.la-agent *)) img {\n  background: #ffffff !important;\n}\n*:where(:not(img):not(.ant-switch):not(.ant-switch *):not(.ant-color-picker-panel *):not(\n    .ant-color-picker-color-block *\n  ):not(.bg_transparent):not(.bg_transparent *):not(.disguise-overlay):not(\n    .disguise-overlay *\n  ):not(.la-agent):not(.la-agent *)) {\n  background: var(--primary-backgroundColor) !important;\n}\n.ant-btn,\n.ant-select-selector {\n  border-color: var(--button-border-color) !important;\n}\n.ant-card,\n.card-border {\n  border-color: var(--card-border-color) !important;\n}\n.bg_transparent,\n.bg_transparent * {\n  background: transparent !important;\n}\nbody {\n  padding: 0;\n  margin: 0;\n}\n",
       "",
     ]);
     const l = i;
